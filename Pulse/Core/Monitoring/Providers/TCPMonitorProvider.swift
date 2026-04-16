@@ -19,15 +19,19 @@ struct TCPMonitorProvider: MonitorProvider {
         let connection = NWConnection(to: endpoint, using: .tcp)
         
         let start = ContinuousClock.now
+        let lock = OSAllocatedUnfairLock(initialState: false)
         
         return await withCheckedContinuation { continuation in
-            var hasResponded = false
-            
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    if !hasResponded {
-                        hasResponded = true
+                    let alreadyResponded = lock.withLock { isResponded in
+                        let original = isResponded
+                        isResponded = true
+                        return original
+                    }
+                    
+                    if !alreadyResponded {
                         connection.cancel()
                         let elapsed = ContinuousClock.now - start
                         continuation.resume(returning: CheckResult(
@@ -37,8 +41,13 @@ struct TCPMonitorProvider: MonitorProvider {
                         ))
                     }
                 case .failed(let error):
-                    if !hasResponded {
-                        hasResponded = true
+                    let alreadyResponded = lock.withLock { isResponded in
+                        let original = isResponded
+                        isResponded = true
+                        return original
+                    }
+
+                    if !alreadyResponded {
                         connection.cancel()
                         continuation.resume(returning: CheckResult(
                             status: .downtime,
@@ -54,8 +63,13 @@ struct TCPMonitorProvider: MonitorProvider {
             // Timeout after 5 seconds if no response.
             Task {
                 try? await Task.sleep(for: .seconds(5))
-                if !hasResponded {
-                    hasResponded = true
+                let alreadyResponded = lock.withLock { isResponded in
+                    let original = isResponded
+                    isResponded = true
+                    return original
+                }
+
+                if !alreadyResponded {
                     connection.cancel()
                     continuation.resume(returning: CheckResult(
                         status: .downtime,

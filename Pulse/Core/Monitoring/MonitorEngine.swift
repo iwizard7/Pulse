@@ -166,6 +166,7 @@ final class MonitorEngine {
             }
 
         case .statusio, .incidentio:
+            break
         }
     }
 
