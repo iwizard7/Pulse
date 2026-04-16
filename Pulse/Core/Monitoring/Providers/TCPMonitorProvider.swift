@@ -19,9 +19,6 @@ struct TCPMonitorProvider: MonitorProvider {
         )
         
         let parameters = NWParameters.tcp
-        // Request immediate failure if path is constrained or expensive if needed, 
-        // but for now let's just use defaults with a strict timeout.
-        
         let connection = NWConnection(to: endpoint, using: parameters)
         let lock = OSAllocatedUnfairLock(initialState: false)
         let start = ContinuousClock.now
@@ -32,15 +29,31 @@ struct TCPMonitorProvider: MonitorProvider {
                 
                 switch state {
                 case .ready:
-                    complete(with: .operational, message: nil)
+                    if config.expectResponse == true {
+                        // Start receiving data to verify the handshake
+                        self.logger.debug("TCP [\(self.config.host)] ready, waiting for data...")
+                        receiveBanner(connection: connection)
+                    } else {
+                        complete(with: .operational, message: nil)
+                    }
                 case .failed(let error):
                     complete(with: .downtime, message: error.localizedDescription)
                 case .waiting(let error):
-                    // For a health check, staying in .waiting is equivalent to downtime.
-                    // This often happens with 'Connection Refused' error codes.
                     complete(with: .downtime, message: "Waiting/Refused: \(error.localizedDescription)")
                 default:
                     break
+                }
+            }
+            
+            func receiveBanner(connection: NWConnection) {
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { content, _, isComplete, error in
+                    if let error = error {
+                        complete(with: .downtime, message: "Read failed: \(error.localizedDescription)")
+                    } else if content != nil {
+                        complete(with: .operational, message: nil)
+                    } else if isComplete {
+                        complete(with: .downtime, message: "Connection closed by server without data")
+                    }
                 }
             }
             
@@ -52,7 +65,6 @@ struct TCPMonitorProvider: MonitorProvider {
                 }
                 
                 if !alreadyResponded {
-                    // It is important to cancel the connection once we have a result.
                     connection.stateUpdateHandler = nil
                     connection.cancel()
                     

@@ -27,6 +27,7 @@ struct MonitorDetailView: View {
     // TCP fields
     @State private var tcpHost: String = ""
     @State private var tcpPort: String = "22"
+    @State private var tcpExpectResponse: Bool = false
 
     // Status page fields
     @State private var statusPageURL: String = ""
@@ -91,7 +92,8 @@ struct MonitorDetailView: View {
                     host: $tcpHost,
                     port: $tcpPort,
                     checkFrequency: $checkFrequency,
-                    failureThreshold: $failureThreshold
+                    failureThreshold: $failureThreshold,
+                    expectResponse: $tcpExpectResponse
                 )
             case .betterstack, .atlassian:
                 StatusPageMonitorSection(url: $statusPageURL, monitorType: monitorType)
@@ -148,6 +150,7 @@ struct MonitorDetailView: View {
         if let tcp = monitor.tcp {
             tcpHost = tcp.host
             tcpPort = String(tcp.port)
+            tcpExpectResponse = tcp.expectResponse ?? false
             checkFrequency = tcp.checkFrequency.map(String.init) ?? "60"
             failureThreshold = tcp.failureThreshold.map(String.init) ?? "1"
         }
@@ -183,7 +186,8 @@ struct MonitorDetailView: View {
                 host: tcpHost.trimmingCharacters(in: .whitespaces),
                 port: Int(tcpPort) ?? 0,
                 checkFrequency: Int(checkFrequency),
-                failureThreshold: Int(failureThreshold)
+                failureThreshold: Int(failureThreshold),
+                expectResponse: tcpExpectResponse
             )
 
         case .betterstack:
@@ -248,11 +252,14 @@ struct TCPMonitorSection: View {
     @Binding var port: String
     @Binding var checkFrequency: String
     @Binding var failureThreshold: String
+    @Binding var expectResponse: Bool
 
     var body: some View {
         Section("TCP / SSH") {
             TextField("Host", text: $host, prompt: Text("example.com or 1.2.3.4"))
             TextField("Port", text: $port, prompt: Text("22"))
+            Toggle("Verify Service Handshake", isOn: $expectResponse)
+                .help("If enabled, Pulse waits for the server to send data (e.g. an SSH banner) after connecting.")
             TextField("Check Frequency (seconds)", text: $checkFrequency, prompt: Text("60"))
             TextField("Failure Threshold", text: $failureThreshold, prompt: Text("1"))
         }

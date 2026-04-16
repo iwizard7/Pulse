@@ -155,6 +155,9 @@ struct TCPMonitorConfig: Codable, Sendable, Hashable {
 
     /// Consecutive failures before the monitor is considered down.
     var failureThreshold: Int?
+
+    /// If true, the check will wait for a response from the server (e.g. for SSH banners).
+    var expectResponse: Bool?
 }
 
 // MARK: - Status Page Monitor
