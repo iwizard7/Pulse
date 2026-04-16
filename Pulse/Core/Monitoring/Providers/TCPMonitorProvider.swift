@@ -6,6 +6,7 @@ import os
 struct TCPMonitorProvider: MonitorProvider {
     private let config: TCPMonitorConfig
     private let logger = Logger(subsystem: "com.sattlerjoshua.Pulse", category: "TCPMonitor")
+    private let queue = DispatchQueue(label: "com.sattlerjoshua.Pulse.tcp-check")
 
     init(config: TCPMonitorConfig) {
         self.config = config
@@ -16,75 +17,64 @@ struct TCPMonitorProvider: MonitorProvider {
             host: NWEndpoint.Host(config.host),
             port: NWEndpoint.Port(integerLiteral: UInt16(config.port))
         )
-        let connection = NWConnection(to: endpoint, using: .tcp)
         
-        let start = ContinuousClock.now
+        let parameters = NWParameters.tcp
+        // Request immediate failure if path is constrained or expensive if needed, 
+        // but for now let's just use defaults with a strict timeout.
+        
+        let connection = NWConnection(to: endpoint, using: parameters)
         let lock = OSAllocatedUnfairLock(initialState: false)
+        let start = ContinuousClock.now
         
         return await withCheckedContinuation { continuation in
             connection.stateUpdateHandler = { state in
                 self.logger.debug("TCP state update for \(self.config.host):\(self.config.port): \(String(describing: state))")
+                
                 switch state {
                 case .ready:
-                    let alreadyResponded = lock.withLock { isResponded in
-                        let original = isResponded
-                        isResponded = true
-                        return original
-                    }
-                    
-                    if !alreadyResponded {
-                        self.logger.info("TCP connection ready for \(self.config.host):\(self.config.port)")
-                        connection.cancel()
-                        let elapsed = ContinuousClock.now - start
-                        continuation.resume(returning: CheckResult(
-                            status: .operational,
-                            responseTime: elapsed,
-                            timestamp: .now
-                        ))
-                    }
+                    complete(with: .operational, message: nil)
                 case .failed(let error):
-                    let alreadyResponded = lock.withLock { isResponded in
-                        let original = isResponded
-                        isResponded = true
-                        return original
-                    }
-
-                    if !alreadyResponded {
-                        self.logger.warning("TCP connection failed for \(self.config.host):\(self.config.port): \(error.localizedDescription)")
-                        connection.cancel()
-                        continuation.resume(returning: CheckResult(
-                            status: .downtime,
-                            timestamp: .now,
-                            message: error.localizedDescription
-                        ))
-                    }
+                    complete(with: .downtime, message: error.localizedDescription)
                 case .waiting(let error):
-                    self.logger.debug("TCP connection waiting for \(self.config.host):\(self.config.port): \(error.localizedDescription)")
+                    // For a health check, staying in .waiting is equivalent to downtime.
+                    // This often happens with 'Connection Refused' error codes.
+                    complete(with: .downtime, message: "Waiting/Refused: \(error.localizedDescription)")
                 default:
                     break
                 }
             }
             
-            // Timeout after 5 seconds if no response.
-            Task {
-                try? await Task.sleep(for: .seconds(5))
+            func complete(with status: MonitorStatus, message: String?) {
                 let alreadyResponded = lock.withLock { isResponded in
                     let original = isResponded
                     isResponded = true
                     return original
                 }
-
+                
                 if !alreadyResponded {
+                    // It is important to cancel the connection once we have a result.
+                    connection.stateUpdateHandler = nil
                     connection.cancel()
+                    
+                    let elapsed = ContinuousClock.now - start
+                    self.logger.info("TCP check for \(self.config.host):\(self.config.port) completed: \(status.rawValue) in \(elapsed)")
+                    
                     continuation.resume(returning: CheckResult(
-                        status: .downtime,
+                        status: status,
+                        responseTime: elapsed,
                         timestamp: .now,
-                        message: "Connection timed out"
+                        message: message
                     ))
                 }
             }
             
-            connection.start(queue: .global())
+            // Hard timeout at 5 seconds.
+            Task {
+                try? await Task.sleep(for: .seconds(5))
+                complete(with: .downtime, message: "Timeout")
+            }
+            
+            connection.start(queue: queue)
         }
     }
 }
